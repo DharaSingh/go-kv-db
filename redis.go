@@ -10,7 +10,7 @@ type Cache struct {
 	items         map[string]Item
 	currentMemory uint64 // current memory stats for entire cache
 	maxMemory     uint64 // total memory available for cache
-	sync.RWMutex
+	sync.Mutex
 }
 
 func NewCache(capacity int, maxMemory uint64) (*Cache, error) {
@@ -44,16 +44,15 @@ func (c *Cache) Set(key string, value interface{}, ttl int) error {
 }
 
 func (c *Cache) Get(key string) (interface{}, bool) {
-	c.RLock()
-	defer c.RUnlock()
-
+	c.Lock()
 	item, ok := c.items[key]
+	c.Unlock()
 	if !ok {
 		return nil, false
 	}
 
 	if item.expiration < time.Now().UnixNano() {
-		go c.Delete(key)
+		c.Delete(key)
 		return nil, false
 	}
 
@@ -73,8 +72,8 @@ func (c *Cache) Delete(key string) {
 }
 
 func (c *Cache) Stats() (uint64, int) {
-	c.RLock()
-	defer c.RUnlock()
+	c.Lock()
+	defer c.Unlock()
 
 	return c.currentMemory, len(c.items)
 }

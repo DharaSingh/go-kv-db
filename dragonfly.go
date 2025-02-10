@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type CacheSharded struct {
+type Dragonfly struct {
 	shards   []*Shard
 	channels []chan *itemOperation
 	deleteCh chan string
@@ -22,17 +22,19 @@ type itemOperation struct {
 	item *Item
 }
 
-func NewCacheSharded(capacity int, maxMemory uint64) (*CacheSharded, error) {
+func NewDragonflyDB(capacity int, maxMemory uint64) (*Dragonfly, error) {
 	numShards := runtime.NumCPU()
 	shards := make([]*Shard, numShards)
-	consistencyDelay := 10 // play with this value to take different performance metrics
+	perShardCapacity := capacity / numShards
+	perShardCapacity = int(float64(perShardCapacity) * 1.2) // 20% extra space for each shard
+	consistencyDelay := 100                                 // play with this value to take different performance metrics
 	channels := make([]chan *itemOperation, numShards)
 	deleteCh := make(chan string, consistencyDelay)
 
-	cache := &CacheSharded{shards: shards, channels: channels, deleteCh: deleteCh}
+	cache := &Dragonfly{shards: shards, channels: channels, deleteCh: deleteCh}
 	for i := 0; i < numShards; i++ {
 		shards[i] = &Shard{
-			items: make(map[string]Item, capacity/numShards), // preallocate map with capacity
+			items: make(map[string]Item, perShardCapacity), // preallocate map with capacity
 		}
 		channels[i] = make(chan *itemOperation, consistencyDelay) // non-blocking read and write, eventaul consistency (try with 1-10-100)
 		go func(ch chan *itemOperation, shard *Shard) {
@@ -60,13 +62,13 @@ func NewCacheSharded(capacity int, maxMemory uint64) (*CacheSharded, error) {
 	return cache, nil
 }
 
-func (c *CacheSharded) getShard(key string) (int, *Shard) {
+func (c *Dragonfly) getShard(key string) (int, *Shard) {
 	hash := fnv32(key)
 	index := int(hash % uint32(len(c.shards)))
 	return index, c.shards[index]
 }
 
-func (c *CacheSharded) Set(key string, value interface{}, ttl int) error {
+func (c *Dragonfly) Set(key string, value interface{}, ttl int) error {
 	exp := int64(0)
 	if ttl > 0 {
 		exp = time.Now().Add(time.Duration(ttl) * time.Second).UnixNano()
@@ -83,7 +85,7 @@ func (c *CacheSharded) Set(key string, value interface{}, ttl int) error {
 	return nil
 }
 
-func (c *CacheSharded) Get(key string) (interface{}, bool) {
+func (c *Dragonfly) Get(key string) (interface{}, bool) {
 	_, shard := c.getShard(key)
 	shard.RLock()
 	defer shard.RUnlock()
@@ -100,11 +102,11 @@ func (c *CacheSharded) Get(key string) (interface{}, bool) {
 	return item.value, true
 }
 
-func (c *CacheSharded) Delete(key string) {
+func (c *Dragonfly) Delete(key string) {
 	c.deleteCh <- key
 }
 
-func (c *CacheSharded) Stats() (uint64, int) {
+func (c *Dragonfly) Stats() (uint64, int) {
 	var totalMemory uint64
 	var totalKeys int
 	for _, shard := range c.shards {
